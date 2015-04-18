@@ -26,10 +26,10 @@ var (
 		"STARTTLS": (*session).handleSTARTTLS,
 		"DATA":     (*session).handleDATA,
 		"RSET":     (*session).handleRSET,
-		"NOOP":     (*session).handleNOOP,
 		"QUIT":     (*session).handleQUIT,
 		"AUTH":     (*session).handleAUTH,
 		"XCLIENT":  (*session).handleXCLIENT,
+		"NOOP":     (*session).goAhead,
 	}
 
 	authMap = map[string]cmdHandler{
@@ -84,7 +84,7 @@ func (s *session) handleHELO(cmd command) {
 	}
 	s.peer.HeloName = cmd.fields[1]
 	s.peer.Protocol = SMTP
-	s.reply(StatusOK, "Go ahead")
+	s.goAhead(cmd)
 }
 
 func (s *session) handleEHLO(cmd command) {
@@ -147,7 +147,7 @@ func (s *session) handleMAIL(cmd command) {
 		}
 	}
 	s.envelope = &Envelope{Sender: addr}
-	s.reply(StatusOK, "Go ahead")
+	s.goAhead(cmd)
 }
 
 func (s *session) handleRCPT(cmd command) {
@@ -172,7 +172,7 @@ func (s *session) handleRCPT(cmd command) {
 		}
 	}
 	s.envelope.Recipients = append(s.envelope.Recipients, addr)
-	s.reply(StatusOK, "Go ahead")
+	s.goAhead(cmd)
 }
 
 func (s *session) handleSTARTTLS(cmd command) {
@@ -257,11 +257,7 @@ func (s *session) handleDATA(cmd command) {
 
 func (s *session) handleRSET(cmd command) {
 	s.reset()
-	s.reply(StatusOK, "Go ahead")
-}
-
-func (s *session) handleNOOP(cmd command) {
-	s.reply(StatusOK, "Go ahead")
+	s.goAhead(cmd)
 }
 
 func (s *session) handleQUIT(cmd command) {
@@ -315,10 +311,7 @@ func (s *session) handleXCLIENT(cmd command) {
 	for _, item := range cmd.fields[1:] {
 		parts := strings.Split(item, "=")
 		if len(parts) != 2 {
-			s.reply(
-				StatusSyntaxError,
-				"Couldn't decode the command.",
-			)
+			s.errDecodingCommand()
 			return
 		}
 		name, value := parts[0], parts[1]
@@ -336,10 +329,7 @@ func (s *session) handleXCLIENT(cmd command) {
 			var err error
 			newTCPPort, err = strconv.ParseUint(value, 10, 16)
 			if err != nil {
-				s.reply(
-					StatusSyntaxError,
-					"Couldn't decode the command.",
-				)
+				s.errDecodingCommand()
 				return
 			}
 			continue
@@ -354,10 +344,7 @@ func (s *session) handleXCLIENT(cmd command) {
 			}
 			continue
 		default:
-			s.reply(
-				StatusSyntaxError,
-				"Couldn't decode the command.",
-			)
+			s.errDecodingCommand()
 			return
 		}
 	}
@@ -394,7 +381,7 @@ func (s *session) authLOGIN(cmd command) {
 	}
 	byteUsername, err := base64.StdEncoding.DecodeString(s.scanner.Text())
 	if err != nil {
-		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		s.errDecodingCredentials()
 		return
 	}
 	s.reply(StatusProvideCredentials, "UGFzc3dvcmQ6")
@@ -403,7 +390,7 @@ func (s *session) authLOGIN(cmd command) {
 	}
 	bytePassword, err := base64.StdEncoding.DecodeString(s.scanner.Text())
 	if err != nil {
-		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		s.errDecodingCredentials()
 		return
 	}
 	s.authenticate(string(byteUsername), string(bytePassword))
@@ -422,15 +409,19 @@ func (s *session) authPLAIN(cmd command) {
 	}
 	data, err := base64.StdEncoding.DecodeString(auth)
 	if err != nil {
-		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		s.errDecodingCredentials()
 		return
 	}
 	parts := bytes.Split(data, []byte{0})
 	if len(parts) != 3 {
-		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		s.errDecodingCredentials()
 		return
 	}
 	s.authenticate(string(parts[1]), string(parts[2]))
+}
+
+func (s *session) goAhead(cmd command) {
+	s.reply(StatusOK, "Go ahead")
 }
 
 func (s *session) authenticate(user, pass string) {
@@ -441,4 +432,12 @@ func (s *session) authenticate(user, pass string) {
 	s.peer.Username = user
 	s.peer.Password = pass
 	s.reply(StatusAuthenticated, "OK, you are now authenticated")
+}
+
+func (s *session) errDecodingCommand() {
+	s.reply(StatusSyntaxError, "Couldn't decode the command.")
+}
+
+func (s *session) errDecodingCredentials() {
+	s.reply(StatusSyntaxError, "Couldn't decode your credentials.")
 }

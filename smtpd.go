@@ -173,7 +173,10 @@ func (srv *Server) configureDefaults() {
 		srv.Hostname = "localhost.localdomain"
 	}
 	if srv.WelcomeMessage == "" {
-		srv.WelcomeMessage = fmt.Sprintf("%s ESMTP ready.", srv.Hostname)
+		srv.WelcomeMessage = fmt.Sprintf(
+			"%s ESMTP ready.",
+			srv.Hostname,
+		)
 	}
 }
 
@@ -224,9 +227,11 @@ func (session *session) reply(code StatusCode, message string) {
 }
 
 func (session *session) flush() {
-	session.conn.SetWriteDeadline(time.Now().Add(session.server.WriteTimeout))
+	session.conn.SetWriteDeadline(
+		time.Now().Add(session.server.WriteTimeout))
 	session.writer.Flush()
-	session.conn.SetReadDeadline(time.Now().Add(session.server.ReadTimeout))
+	session.conn.SetReadDeadline(
+		time.Now().Add(session.server.ReadTimeout))
 }
 
 func (session *session) error(err error) {
@@ -234,7 +239,7 @@ func (session *session) error(err error) {
 		session.reply(smtpdError.Code, smtpdError.Message)
 		return
 	}
-	session.reply(StatusLocalError, fmt.Sprintf("%s", err))
+	session.reply(StatusLocalError, err.Error())
 }
 
 func (session *session) extensions() []string {
@@ -263,7 +268,7 @@ func (session *session) deliver() error {
 }
 
 func (session *session) close() {
+	defer session.conn.Close()
 	session.writer.Flush()
 	time.Sleep(200 * time.Millisecond)
-	session.conn.Close()
 }
