@@ -1097,7 +1097,7 @@ func TestErrors(t *testing.T) {
 		t.Fatalf("Dial failed: %v", err)
 	}
 
-	if err := cmd(c.Text, 501, "AUTH PLAIN foobar"); err != nil {
+	if err := cmd(c.Text, 503, "AUTH PLAIN foobar"); err != nil {
 		t.Fatalf("AUTH didn't fail: %v", err)
 	}
 

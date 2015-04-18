@@ -15,8 +15,10 @@ import (
 	"time"
 )
 
+type cmdHandler func(*session, command)
+
 var (
-	cmdMap = map[string]func(*session, command){
+	cmdMap = map[string]cmdHandler{
 		"HELO":     (*session).handleHELO,
 		"EHLO":     (*session).handleEHLO,
 		"MAIL":     (*session).handleMAIL,
@@ -28,6 +30,11 @@ var (
 		"QUIT":     (*session).handleQUIT,
 		"AUTH":     (*session).handleAUTH,
 		"XCLIENT":  (*session).handleXCLIENT,
+	}
+
+	authMap = map[string]cmdHandler{
+		"LOGIN": (*session).authLOGIN,
+		"PLAIN": (*session).authPLAIN,
 	}
 )
 
@@ -268,7 +275,7 @@ func (s *session) handleAUTH(cmd command) {
 		return
 	}
 	if s.peer.HeloName == "" {
-		s.reply(StatusSyntaxError, "Please introduce yourself first.")
+		s.reply(StatusBadSequence, "Please introduce yourself first.")
 		return
 	}
 	if !s.tls {
@@ -279,89 +286,15 @@ func (s *session) handleAUTH(cmd command) {
 		return
 	}
 	mechanism := strings.ToUpper(cmd.fields[1])
-	username := ""
-	password := ""
-	switch mechanism {
-	case "PLAIN":
-		auth := ""
-		if len(cmd.fields) < 3 {
-			s.reply(
-				StatusProvideCredentials,
-				"Give me your credentials",
-			)
-			if !s.scanner.Scan() {
-				return
-			}
-			auth = s.scanner.Text()
-		} else {
-			auth = cmd.fields[2]
-		}
-		data, err := base64.StdEncoding.DecodeString(auth)
-		if err != nil {
-			s.reply(
-				StatusSyntaxError,
-				"Couldn't decode your credentials",
-			)
-			return
-		}
-		parts := bytes.Split(data, []byte{0})
-		if len(parts) != 3 {
-			s.reply(
-				StatusSyntaxError,
-				"Couldn't decode your credentials",
-			)
-			return
-		}
-		username = string(parts[1])
-		password = string(parts[2])
-
-	case "LOGIN":
-		s.reply(StatusProvideCredentials, "VXNlcm5hbWU6")
-		if !s.scanner.Scan() {
-			return
-		}
-		byteUsername, err := base64.StdEncoding.DecodeString(s.scanner.Text())
-		if err != nil {
-			s.reply(
-				StatusSyntaxError,
-				"Couldn't decode your credentials",
-			)
-			return
-		}
-		s.reply(StatusProvideCredentials, "UGFzc3dvcmQ6")
-		if !s.scanner.Scan() {
-			return
-		}
-		bytePassword, err := base64.StdEncoding.DecodeString(s.scanner.Text())
-		if err != nil {
-			s.reply(
-				StatusSyntaxError,
-				"Couldn't decode your credentials",
-			)
-			return
-		}
-
-		username = string(byteUsername)
-		password = string(bytePassword)
-
-	default:
+	action, exists := authMap[mechanism]
+	if !exists {
 		s.reply(
 			StatusCommandNotImplemented,
 			"Unknown authentication mechanism",
 		)
 		return
 	}
-	err := s.server.Authenticator(s.peer, username, password)
-	if err != nil {
-		s.error(err)
-		return
-	}
-
-	s.peer.Username = username
-	s.peer.Password = password
-
-	s.reply(StatusAuthenticated, "OK, you are now authenticated")
-
+	action(s, cmd)
 }
 
 func (s *session) handleXCLIENT(cmd command) {
@@ -452,4 +385,60 @@ func (s *session) handleXCLIENT(cmd command) {
 		s.peer.Protocol = newProto
 	}
 	s.welcome()
+}
+
+func (s *session) authLOGIN(cmd command) {
+	s.reply(StatusProvideCredentials, "VXNlcm5hbWU6")
+	if !s.scanner.Scan() {
+		return
+	}
+	byteUsername, err := base64.StdEncoding.DecodeString(s.scanner.Text())
+	if err != nil {
+		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		return
+	}
+	s.reply(StatusProvideCredentials, "UGFzc3dvcmQ6")
+	if !s.scanner.Scan() {
+		return
+	}
+	bytePassword, err := base64.StdEncoding.DecodeString(s.scanner.Text())
+	if err != nil {
+		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		return
+	}
+	s.authenticate(string(byteUsername), string(bytePassword))
+}
+
+func (s *session) authPLAIN(cmd command) {
+	auth := ""
+	if len(cmd.fields) < 3 {
+		s.reply(StatusProvideCredentials, "Give me your credentials")
+		if !s.scanner.Scan() {
+			return
+		}
+		auth = s.scanner.Text()
+	} else {
+		auth = cmd.fields[2]
+	}
+	data, err := base64.StdEncoding.DecodeString(auth)
+	if err != nil {
+		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		return
+	}
+	parts := bytes.Split(data, []byte{0})
+	if len(parts) != 3 {
+		s.reply(StatusSyntaxError, "Couldn't decode your credentials")
+		return
+	}
+	s.authenticate(string(parts[1]), string(parts[2]))
+}
+
+func (s *session) authenticate(user, pass string) {
+	if err := s.server.Authenticator(s.peer, user, pass); err != nil {
+		s.error(err)
+		return
+	}
+	s.peer.Username = user
+	s.peer.Password = pass
+	s.reply(StatusAuthenticated, "OK, you are now authenticated")
 }
