@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"bitbucket.org/chrj/smtpd"
+	"github.com/marcinwyszynski/smtpd"
 )
 
 var localhostCert = []byte(`-----BEGIN CERTIFICATE-----
@@ -338,7 +338,7 @@ func TestConnectionCheckSimpleError(t *testing.T) {
 
 	addr, closer := runserver(t, &smtpd.Server{
 		ConnectionChecker: func(peer smtpd.Peer) error {
-			return errors.New("Denied")
+			return errors.New("denied")
 		},
 	})
 

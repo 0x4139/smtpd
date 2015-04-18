@@ -474,9 +474,9 @@ func (session *session) handleXCLIENT(cmd command) {
 	}
 
 	var (
-		newHeloName          = ""
-		newAddr     net.IP   = nil
-		newTCPPort  uint64   = 0
+		newHeloName = ""
+		newAddr     net.IP
+		newTCPPort  uint64
 		newUsername          = ""
 		newProto    Protocol = ""
 	)
