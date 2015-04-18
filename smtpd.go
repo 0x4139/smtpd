@@ -68,15 +68,6 @@ type Peer struct {
 	TLS        *tls.ConnectionState // TLS Connection details, if on TLS
 }
 
-// Error represents an Error reported in the SMTP session.
-type Error struct {
-	Code    int    // The integer error code
-	Message string // The error message
-}
-
-// Error returns a string representation of the SMTP error
-func (e Error) Error() string { return fmt.Sprintf("%d %s", e.Code, e.Message) }
-
 type session struct {
 	server *Server
 
@@ -93,7 +84,6 @@ type session struct {
 }
 
 func (srv *Server) newSession(c net.Conn) (s *session) {
-
 	s = &session{
 		server: srv,
 		conn:   c,
@@ -106,41 +96,30 @@ func (srv *Server) newSession(c net.Conn) (s *session) {
 	}
 
 	s.scanner = bufio.NewScanner(s.reader)
-
 	return
-
 }
 
 // ListenAndServe starts the SMTP server and listens on the address provided
 func (srv *Server) ListenAndServe(addr string) error {
-
 	srv.configureDefaults()
-
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-
 	return srv.Serve(l)
 }
 
 // Serve starts the SMTP server and listens on the Listener provided
 func (srv *Server) Serve(l net.Listener) error {
-
 	srv.configureDefaults()
-
 	defer l.Close()
-
 	var limiter chan struct{}
-
 	if srv.MaxConnections > 0 {
 		limiter = make(chan struct{}, srv.MaxConnections)
 	} else {
 		limiter = nil
 	}
-
 	for {
-
 		conn, e := l.Accept()
 		if e != nil {
 			if ne, ok := e.(net.Error); ok && ne.Temporary() {
@@ -165,88 +144,62 @@ func (srv *Server) Serve(l net.Listener) error {
 		} else {
 			go session.serve()
 		}
-
 	}
-
 }
 
 func (srv *Server) configureDefaults() {
-
 	if srv.MaxMessageSize == 0 {
 		srv.MaxMessageSize = 10240000
 	}
-
 	if srv.MaxConnections == 0 {
 		srv.MaxConnections = 100
 	}
-
 	if srv.MaxRecipients == 0 {
 		srv.MaxRecipients = 100
 	}
-
 	if srv.ReadTimeout == 0 {
 		srv.ReadTimeout = time.Second * 60
 	}
-
 	if srv.WriteTimeout == 0 {
 		srv.WriteTimeout = time.Second * 60
 	}
-
 	if srv.DataTimeout == 0 {
 		srv.DataTimeout = time.Minute * 5
 	}
-
 	if srv.ForceTLS && srv.TLSConfig == nil {
 		log.Fatal("Cannot use ForceTLS with no TLSConfig")
 	}
-
 	if srv.Hostname == "" {
 		srv.Hostname = "localhost.localdomain"
 	}
-
 	if srv.WelcomeMessage == "" {
 		srv.WelcomeMessage = fmt.Sprintf("%s ESMTP ready.", srv.Hostname)
 	}
-
 }
 
 func (session *session) serve() {
-
 	defer session.close()
-
 	session.welcome()
-
 	for {
-
 		for session.scanner.Scan() {
 			session.handle(session.scanner.Text())
 		}
-
 		err := session.scanner.Err()
-
 		if err == bufio.ErrTooLong {
-
-			session.reply(500, "Line too long")
-
+			session.reply(StatusSyntaxError, "Line too long")
 			// Advance reader to the next newline
-
 			session.reader.ReadString('\n')
 			session.scanner = bufio.NewScanner(session.reader)
-
 			// Reset and have the client start over.
-
 			session.reset()
-
 			continue
 		}
-
 		break
 	}
-
 }
 
 func (session *session) reject() {
-	session.reply(421, "Too busy. Try again later.")
+	session.reply(StatusServiceNotAvailable, "Too busy. Try again later.")
 	session.close()
 }
 
@@ -255,21 +208,17 @@ func (session *session) reset() {
 }
 
 func (session *session) welcome() {
-
-	if session.server.ConnectionChecker != nil {
-		err := session.server.ConnectionChecker(session.peer)
-		if err != nil {
-			session.error(err)
-			session.close()
-			return
-		}
+	if session.server.ConnectionChecker == nil {
+		session.reply(StatusServiceReady, session.server.WelcomeMessage)
+		return
 	}
-
-	session.reply(220, session.server.WelcomeMessage)
-
+	if err := session.server.ConnectionChecker(session.peer); err != nil {
+		session.error(err)
+		session.close()
+	}
 }
 
-func (session *session) reply(code int, message string) {
+func (session *session) reply(code StatusCode, message string) {
 	fmt.Fprintf(session.writer, "%d %s\r\n", code, message)
 	session.flush()
 }
@@ -283,33 +232,27 @@ func (session *session) flush() {
 func (session *session) error(err error) {
 	if smtpdError, ok := err.(Error); ok {
 		session.reply(smtpdError.Code, smtpdError.Message)
-	} else {
-		session.reply(502, fmt.Sprintf("%s", err))
+		return
 	}
+	session.reply(StatusLocalError, fmt.Sprintf("%s", err))
 }
 
 func (session *session) extensions() []string {
-
 	extensions := []string{
 		fmt.Sprintf("SIZE %d", session.server.MaxMessageSize),
 		"8BITMIME",
 		"PIPELINING",
 	}
-
 	if session.server.EnableXCLIENT {
 		extensions = append(extensions, "XCLIENT")
 	}
-
 	if session.server.TLSConfig != nil && !session.tls {
 		extensions = append(extensions, "STARTTLS")
 	}
-
 	if session.server.Authenticator != nil && session.tls {
 		extensions = append(extensions, "AUTH PLAIN LOGIN")
 	}
-
 	return extensions
-
 }
 
 func (session *session) deliver() error {

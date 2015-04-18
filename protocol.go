@@ -15,6 +15,22 @@ import (
 	"time"
 )
 
+var (
+	cmdMap = map[string]func(*session, command){
+		"HELO":     (*session).handleHELO,
+		"EHLO":     (*session).handleEHLO,
+		"MAIL":     (*session).handleMAIL,
+		"RCPT":     (*session).handleRCPT,
+		"STARTTLS": (*session).handleSTARTTLS,
+		"DATA":     (*session).handleDATA,
+		"RSET":     (*session).handleRSET,
+		"NOOP":     (*session).handleNOOP,
+		"QUIT":     (*session).handleQUIT,
+		"AUTH":     (*session).handleAUTH,
+		"XCLIENT":  (*session).handleXCLIENT,
+	}
+)
+
 type command struct {
 	line   string
 	action string
@@ -23,423 +39,305 @@ type command struct {
 }
 
 func parseLine(line string) (cmd command) {
-
 	cmd.line = line
 	cmd.fields = strings.Fields(line)
-
 	if len(cmd.fields) > 0 {
 		cmd.action = strings.ToUpper(cmd.fields[0])
 		if len(cmd.fields) > 1 {
 			cmd.params = strings.Split(cmd.fields[1], ":")
 		}
 	}
-
 	return
-
 }
 
-func (session *session) handle(line string) {
-
+func (s *session) handle(line string) {
 	cmd := parseLine(line)
-
-	// Commands are dispatched to the appropriate handler functions.
-	// If a network error occurs during handling, the handler should
-	// just return and let the error be handled on the next read.
-
-	switch cmd.action {
-
-	case "HELO":
-		session.handleHELO(cmd)
+	action, exists := cmdMap[cmd.action]
+	if !exists {
+		s.reply(StatusCommandNotImplemented, "Unsupported command")
 		return
-
-	case "EHLO":
-		session.handleEHLO(cmd)
-		return
-
-	case "MAIL":
-		session.handleMAIL(cmd)
-		return
-
-	case "RCPT":
-		session.handleRCPT(cmd)
-		return
-
-	case "STARTTLS":
-		session.handleSTARTTLS(cmd)
-		return
-
-	case "DATA":
-		session.handleDATA(cmd)
-		return
-
-	case "RSET":
-		session.handleRSET(cmd)
-		return
-
-	case "NOOP":
-		session.handleNOOP(cmd)
-		return
-
-	case "QUIT":
-		session.handleQUIT(cmd)
-		return
-
-	case "AUTH":
-		session.handleAUTH(cmd)
-		return
-
-	case "XCLIENT":
-		session.handleXCLIENT(cmd)
-		return
-
 	}
-
-	session.reply(502, "Unsupported command.")
-
+	action(s, cmd)
 }
 
-func (session *session) handleHELO(cmd command) {
-
+func (s *session) handleHELO(cmd command) {
 	if len(cmd.fields) < 2 {
-		session.reply(502, "Missing parameter")
+		s.reply(StatusParameterNotImplemented, "Missing parameter")
 		return
 	}
-
-	if session.peer.HeloName != "" {
-		// Reset envelope in case of duplicate HELO
-		session.reset()
+	if s.peer.HeloName != "" {
+		s.reset() // Reset envelope in case of duplicate HELO
 	}
-
-	if session.server.HeloChecker != nil {
-		err := session.server.HeloChecker(session.peer, cmd.fields[1])
+	if s.server.HeloChecker != nil {
+		err := s.server.HeloChecker(s.peer, cmd.fields[1])
 		if err != nil {
-			session.error(err)
+			s.error(err)
 			return
 		}
 	}
-
-	session.peer.HeloName = cmd.fields[1]
-	session.peer.Protocol = SMTP
-	session.reply(250, "Go ahead")
-
-	return
-
+	s.peer.HeloName = cmd.fields[1]
+	s.peer.Protocol = SMTP
+	s.reply(StatusOK, "Go ahead")
 }
 
-func (session *session) handleEHLO(cmd command) {
-
+func (s *session) handleEHLO(cmd command) {
 	if len(cmd.fields) < 2 {
-		session.reply(502, "Missing parameter")
+		s.reply(StatusParameterNotImplemented, "Missing parameter")
 		return
 	}
-
-	if session.peer.HeloName != "" {
+	if s.peer.HeloName != "" {
 		// Reset envelope in case of duplicate EHLO
-		session.reset()
+		s.reset()
 	}
-
-	if session.server.HeloChecker != nil {
-		err := session.server.HeloChecker(session.peer, cmd.fields[1])
+	if s.server.HeloChecker != nil {
+		err := s.server.HeloChecker(s.peer, cmd.fields[1])
 		if err != nil {
-			session.error(err)
+			s.error(err)
 			return
 		}
 	}
-
-	session.peer.HeloName = cmd.fields[1]
-	session.peer.Protocol = ESMTP
-
-	fmt.Fprintf(session.writer, "250-%s\r\n", session.server.Hostname)
-
-	extensions := session.extensions()
-
+	s.peer.HeloName = cmd.fields[1]
+	s.peer.Protocol = ESMTP
+	fmt.Fprintf(s.writer, "250-%s\r\n", s.server.Hostname)
+	extensions := s.extensions()
 	if len(extensions) > 1 {
 		for _, ext := range extensions[:len(extensions)-1] {
-			fmt.Fprintf(session.writer, "250-%s\r\n", ext)
+			fmt.Fprintf(s.writer, "250-%s\r\n", ext)
 		}
 	}
-
-	session.reply(250, extensions[len(extensions)-1])
-
-	return
-
+	s.reply(StatusOK, extensions[len(extensions)-1])
 }
 
-func (session *session) handleMAIL(cmd command) {
-
-	if session.peer.HeloName == "" {
-		session.reply(502, "Please introduce yourself first.")
+func (s *session) handleMAIL(cmd command) {
+	if s.peer.HeloName == "" {
+		s.reply(StatusBadSequence, "Please introduce yourself first.")
 		return
 	}
-
-	if !session.tls && session.server.ForceTLS {
-		session.reply(502, "Please turn on TLS by issuing a STARTTLS command.")
+	if !s.tls && s.server.ForceTLS {
+		s.reply(
+			StatusBadSequence,
+			"Please turn on TLS by issuing a STARTTLS command.",
+		)
 		return
 	}
-
-	if session.envelope != nil {
-		session.reply(502, "Duplicate MAIL")
+	if s.envelope != nil {
+		s.reply(StatusBadSequence, "Duplicate MAIL")
 		return
 	}
-
 	addr, err := parseAddress(cmd.params[1])
-
 	if err != nil {
-		session.reply(502, "Ill-formatted e-mail address")
+		s.reply(
+			StatusMailboxNameNotAllowed,
+			"Ill-formatted e-mail address",
+		)
 		return
 	}
-
-	if session.server.SenderChecker != nil {
-		err = session.server.SenderChecker(session.peer, addr)
+	if s.server.SenderChecker != nil {
+		err = s.server.SenderChecker(s.peer, addr)
 		if err != nil {
-			session.error(err)
+			s.error(err)
 			return
 		}
 	}
-
-	session.envelope = &Envelope{
-		Sender: addr,
-	}
-
-	session.reply(250, "Go ahead")
-
-	return
-
+	s.envelope = &Envelope{Sender: addr}
+	s.reply(StatusOK, "Go ahead")
 }
 
-func (session *session) handleRCPT(cmd command) {
-
-	if session.envelope == nil {
-		session.reply(502, "Missing MAIL FROM command.")
+func (s *session) handleRCPT(cmd command) {
+	if s.envelope == nil {
+		s.reply(StatusSyntaxError, "Missing MAIL FROM command.")
 		return
 	}
-
-	if len(session.envelope.Recipients) >= session.server.MaxRecipients {
-		session.reply(452, "Too many recipients")
+	if len(s.envelope.Recipients) >= s.server.MaxRecipients {
+		s.reply(StatusInsufficientStorage, "Too many recipients")
 		return
 	}
-
 	addr, err := parseAddress(cmd.params[1])
-
 	if err != nil {
-		session.reply(502, "Ill-formatted e-mail address")
+		s.reply(StatusSyntaxError, "Ill-formatted e-mail address")
 		return
 	}
-
-	if session.server.RecipientChecker != nil {
-		err = session.server.RecipientChecker(session.peer, addr)
+	if s.server.RecipientChecker != nil {
+		err = s.server.RecipientChecker(s.peer, addr)
 		if err != nil {
-			session.error(err)
+			s.error(err)
 			return
 		}
 	}
-
-	session.envelope.Recipients = append(session.envelope.Recipients, addr)
-
-	session.reply(250, "Go ahead")
-
-	return
-
+	s.envelope.Recipients = append(s.envelope.Recipients, addr)
+	s.reply(StatusOK, "Go ahead")
 }
 
-func (session *session) handleSTARTTLS(cmd command) {
-
-	if session.tls {
-		session.reply(502, "Already running in TLS")
+func (s *session) handleSTARTTLS(cmd command) {
+	if s.tls {
+		s.reply(StatusSyntaxError, "Already running in TLS")
 		return
 	}
-
-	if session.server.TLSConfig == nil {
-		session.reply(502, "TLS not supported")
+	if s.server.TLSConfig == nil {
+		s.reply(StatusCommandNotImplemented, "TLS not supported")
 		return
 	}
-
-	tlsConn := tls.Server(session.conn, session.server.TLSConfig)
-	session.reply(220, "Go ahead")
-
+	tlsConn := tls.Server(s.conn, s.server.TLSConfig)
+	s.reply(StatusServiceReady, "Go ahead")
 	if err := tlsConn.Handshake(); err != nil {
-		session.reply(550, "Handshake error")
+		s.reply(StatusMailboxPermanentlyUnavailable, "Handshake error")
 		return
 	}
 
 	// Reset envelope as a new EHLO/HELO is required after STARTTLS
-	session.reset()
+	s.reset()
 
 	// Reset deadlines on the underlying connection before I replace it
 	// with a TLS connection
-	session.conn.SetDeadline(time.Time{})
+	s.conn.SetDeadline(time.Time{})
 
 	// Replace connection with a TLS connection
-	session.conn = tlsConn
-	session.reader = bufio.NewReader(tlsConn)
-	session.writer = bufio.NewWriter(tlsConn)
-	session.scanner = bufio.NewScanner(session.reader)
-	session.tls = true
+	s.conn = tlsConn
+	s.reader = bufio.NewReader(tlsConn)
+	s.writer = bufio.NewWriter(tlsConn)
+	s.scanner = bufio.NewScanner(s.reader)
+	s.tls = true
 
 	// Save connection state on peer
 	state := tlsConn.ConnectionState()
-	session.peer.TLS = &state
+	s.peer.TLS = &state
 
 	// Flush the connection to set new timeout deadlines
-	session.flush()
-
+	s.flush()
 	return
-
 }
 
-func (session *session) handleDATA(cmd command) {
-
-	if session.envelope == nil || len(session.envelope.Recipients) == 0 {
-		session.reply(502, "Missing RCPT TO command.")
+func (s *session) handleDATA(cmd command) {
+	if s.envelope == nil || len(s.envelope.Recipients) == 0 {
+		s.reply(StatusSyntaxError, "Missing RCPT TO command.")
 		return
 	}
-
-	session.reply(354, "Go ahead. End your data with <CR><LF>.<CR><LF>")
-	session.conn.SetDeadline(time.Now().Add(session.server.DataTimeout))
-
+	s.reply(
+		StatusStartMailInput,
+		"Go ahead. End your data with <CR><LF>.<CR><LF>",
+	)
+	s.conn.SetDeadline(time.Now().Add(s.server.DataTimeout))
 	data := &bytes.Buffer{}
-	reader := textproto.NewReader(session.reader).DotReader()
-
-	_, err := io.CopyN(data, reader, int64(session.server.MaxMessageSize))
-
+	reader := textproto.NewReader(s.reader).DotReader()
+	_, err := io.CopyN(data, reader, int64(s.server.MaxMessageSize))
 	if err == io.EOF {
-
 		// EOF was reached before MaxMessageSize
 		// Accept and deliver message
-
-		session.envelope.Data = data.Bytes()
-
-		if err := session.deliver(); err != nil {
-			session.error(err)
+		s.envelope.Data = data.Bytes()
+		if err := s.deliver(); err != nil {
+			s.error(err)
 		} else {
-			session.reply(250, "Thank you.")
+			s.reply(StatusOK, "Thank you.")
 		}
-
-		session.reset()
-
+		s.reset()
 	}
-
 	if err != nil {
 		// Network error, ignore
 		return
 	}
-
 	// Discard the rest and report an error.
 	_, err = io.Copy(ioutil.Discard, reader)
-
 	if err != nil {
 		// Network error, ignore
 		return
 	}
-
-	session.reply(552, fmt.Sprintf(
+	s.reply(StatusExceededStorageAllocation, fmt.Sprintf(
 		"Message exceeded max message size of %d bytes",
-		session.server.MaxMessageSize,
+		s.server.MaxMessageSize,
 	))
-
-	session.reset()
-
-	return
-
+	s.reset()
 }
 
-func (session *session) handleRSET(cmd command) {
-	session.reset()
-	session.reply(250, "Go ahead")
-	return
+func (s *session) handleRSET(cmd command) {
+	s.reset()
+	s.reply(StatusOK, "Go ahead")
 }
 
-func (session *session) handleNOOP(cmd command) {
-	session.reply(250, "Go ahead")
-	return
+func (s *session) handleNOOP(cmd command) {
+	s.reply(StatusOK, "Go ahead")
 }
 
-func (session *session) handleQUIT(cmd command) {
-	session.reply(221, "OK, bye")
-	session.close()
-	return
+func (s *session) handleQUIT(cmd command) {
+	s.reply(StatusServiceClosing, "OK, bye")
+	s.close()
 }
 
-func (session *session) handleAUTH(cmd command) {
-
-	if session.server.Authenticator == nil {
-		session.reply(502, "AUTH not supported.")
+func (s *session) handleAUTH(cmd command) {
+	if s.server.Authenticator == nil {
+		s.reply(StatusCommandNotImplemented, "AUTH not supported.")
 		return
 	}
-
-	if session.peer.HeloName == "" {
-		session.reply(502, "Please introduce yourself first.")
+	if s.peer.HeloName == "" {
+		s.reply(StatusSyntaxError, "Please introduce yourself first.")
 		return
 	}
-
-	if !session.tls {
-		session.reply(502, "Cannot AUTH in plain text mode. Use STARTTLS.")
+	if !s.tls {
+		s.reply(
+			StatusSyntaxError,
+			"Cannot AUTH in plain text mode. Use STARTTLS.",
+		)
 		return
 	}
-
 	mechanism := strings.ToUpper(cmd.fields[1])
-
 	username := ""
 	password := ""
-
 	switch mechanism {
-
 	case "PLAIN":
-
 		auth := ""
-
 		if len(cmd.fields) < 3 {
-			session.reply(334, "Give me your credentials")
-			if !session.scanner.Scan() {
+			s.reply(
+				StatusProvideCredentials,
+				"Give me your credentials",
+			)
+			if !s.scanner.Scan() {
 				return
 			}
-			auth = session.scanner.Text()
+			auth = s.scanner.Text()
 		} else {
 			auth = cmd.fields[2]
 		}
-
 		data, err := base64.StdEncoding.DecodeString(auth)
-
 		if err != nil {
-			session.reply(502, "Couldn't decode your credentials")
+			s.reply(
+				StatusSyntaxError,
+				"Couldn't decode your credentials",
+			)
 			return
 		}
-
 		parts := bytes.Split(data, []byte{0})
-
 		if len(parts) != 3 {
-			session.reply(502, "Couldn't decode your credentials")
+			s.reply(
+				StatusSyntaxError,
+				"Couldn't decode your credentials",
+			)
 			return
 		}
-
 		username = string(parts[1])
 		password = string(parts[2])
 
 	case "LOGIN":
-
-		session.reply(334, "VXNlcm5hbWU6")
-
-		if !session.scanner.Scan() {
+		s.reply(StatusProvideCredentials, "VXNlcm5hbWU6")
+		if !s.scanner.Scan() {
 			return
 		}
-
-		byteUsername, err := base64.StdEncoding.DecodeString(session.scanner.Text())
-
+		byteUsername, err := base64.StdEncoding.DecodeString(s.scanner.Text())
 		if err != nil {
-			session.reply(502, "Couldn't decode your credentials")
+			s.reply(
+				StatusSyntaxError,
+				"Couldn't decode your credentials",
+			)
 			return
 		}
-
-		session.reply(334, "UGFzc3dvcmQ6")
-
-		if !session.scanner.Scan() {
+		s.reply(StatusProvideCredentials, "UGFzc3dvcmQ6")
+		if !s.scanner.Scan() {
 			return
 		}
-
-		bytePassword, err := base64.StdEncoding.DecodeString(session.scanner.Text())
-
+		bytePassword, err := base64.StdEncoding.DecodeString(s.scanner.Text())
 		if err != nil {
-			session.reply(502, "Couldn't decode your credentials")
+			s.reply(
+				StatusSyntaxError,
+				"Couldn't decode your credentials",
+			)
 			return
 		}
 
@@ -447,32 +345,33 @@ func (session *session) handleAUTH(cmd command) {
 		password = string(bytePassword)
 
 	default:
-
-		session.reply(502, "Unknown authentication mechanism")
+		s.reply(
+			StatusCommandNotImplemented,
+			"Unknown authentication mechanism",
+		)
 		return
-
 	}
-
-	err := session.server.Authenticator(session.peer, username, password)
+	err := s.server.Authenticator(s.peer, username, password)
 	if err != nil {
-		session.error(err)
+		s.error(err)
 		return
 	}
 
-	session.peer.Username = username
-	session.peer.Password = password
+	s.peer.Username = username
+	s.peer.Password = password
 
-	session.reply(235, "OK, you are now authenticated")
+	s.reply(StatusAuthenticated, "OK, you are now authenticated")
 
 }
 
-func (session *session) handleXCLIENT(cmd command) {
-
-	if !session.server.EnableXCLIENT {
-		session.reply(550, "XCLIENT not enabled")
+func (s *session) handleXCLIENT(cmd command) {
+	if !s.server.EnableXCLIENT {
+		s.reply(
+			StatusMailboxPermanentlyUnavailable,
+			"XCLIENT not enabled",
+		)
 		return
 	}
-
 	var (
 		newHeloName = ""
 		newAddr     net.IP
@@ -480,46 +379,40 @@ func (session *session) handleXCLIENT(cmd command) {
 		newUsername          = ""
 		newProto    Protocol = ""
 	)
-
 	for _, item := range cmd.fields[1:] {
-
 		parts := strings.Split(item, "=")
-
 		if len(parts) != 2 {
-			session.reply(502, "Couldn't decode the command.")
+			s.reply(
+				StatusSyntaxError,
+				"Couldn't decode the command.",
+			)
 			return
 		}
-
-		name := parts[0]
-		value := parts[1]
-
+		name, value := parts[0], parts[1]
 		switch name {
-
 		case "NAME":
 			// Unused in smtpd package
 			continue
-
 		case "HELO":
 			newHeloName = value
 			continue
-
 		case "ADDR":
 			newAddr = net.ParseIP(value)
 			continue
-
 		case "PORT":
 			var err error
 			newTCPPort, err = strconv.ParseUint(value, 10, 16)
 			if err != nil {
-				session.reply(502, "Couldn't decode the command.")
+				s.reply(
+					StatusSyntaxError,
+					"Couldn't decode the command.",
+				)
 				return
 			}
 			continue
-
 		case "LOGIN":
 			newUsername = value
 			continue
-
 		case "PROTO":
 			if value == "SMTP" {
 				newProto = SMTP
@@ -527,40 +420,36 @@ func (session *session) handleXCLIENT(cmd command) {
 				newProto = ESMTP
 			}
 			continue
-
 		default:
-			session.reply(502, "Couldn't decode the command.")
+			s.reply(
+				StatusSyntaxError,
+				"Couldn't decode the command.",
+			)
 			return
 		}
-
 	}
-
-	tcpAddr, ok := session.peer.Addr.(*net.TCPAddr)
+	tcpAddr, ok := s.peer.Addr.(*net.TCPAddr)
 	if !ok {
-		session.reply(502, "Unsupported network connection")
+		s.reply(
+			StatusCommandNotImplemented,
+			"Unsupported network connection",
+		)
 		return
 	}
-
 	if newHeloName != "" {
-		session.peer.HeloName = newHeloName
+		s.peer.HeloName = newHeloName
 	}
-
 	if newAddr != nil {
 		tcpAddr.IP = newAddr
 	}
-
 	if newTCPPort != 0 {
 		tcpAddr.Port = int(newTCPPort)
 	}
-
 	if newUsername != "" {
-		session.peer.Username = newUsername
+		s.peer.Username = newUsername
 	}
-
 	if newProto != "" {
-		session.peer.Protocol = newProto
+		s.peer.Protocol = newProto
 	}
-
-	session.welcome()
-
+	s.welcome()
 }
