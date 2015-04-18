@@ -1,0 +1,16 @@
+data/envelope.go.i
+data/protocol.go.i
+data/wrap_test.go.i
+data/cmd/smtpd/main.go.i
+data/cmd/smtpd/smtpd.csr.i
+data/address.go.i
+data/smtpd.go.i
+data/cmd/smtpd/smtpd.key.i
+data/.hgignore.i
+data/cmd/smtpd/smtpd.crt.i
+data/example_test.go.i
+data/examples/dkim-proxy/main.go.i
+data/LICENSE.i
+data/smtpd_test.go.i
+data/wrap.go.i
+data/README.md.i
