@@ -87,96 +87,96 @@ func (srv *Server) newSession(c net.Conn) (s *session) {
 	return
 }
 
-func (session *session) serve() {
-	defer session.close()
-	session.welcome()
+func (s *session) serve() {
+	defer s.close()
+	s.welcome()
 	for {
-		for session.scanner.Scan() {
-			session.handle(session.scanner.Text())
+		for s.scanner.Scan() {
+			s.handle(s.scanner.Text())
 		}
-		err := session.scanner.Err()
+		err := s.scanner.Err()
 		if err == bufio.ErrTooLong {
-			session.reply(StatusSyntaxError, "Line too long")
+			s.reply(StatusSyntaxError, "Line too long")
 			// Advance reader to the next newline
-			session.reader.ReadString('\n')
-			session.scanner = bufio.NewScanner(session.reader)
+			s.reader.ReadString('\n')
+			s.scanner = bufio.NewScanner(s.reader)
 			// Reset and have the client start over.
-			session.reset()
+			s.reset()
 			continue
 		}
 		break
 	}
 }
 
-func (session *session) reject() {
-	session.reply(StatusServiceNotAvailable, "Too busy. Try again later.")
-	session.close()
+func (s *session) reject() {
+	s.reply(StatusServiceNotAvailable, "Too busy. Try again later.")
+	s.close()
 }
 
-func (session *session) reset() {
-	session.envelope = nil
+func (s *session) reset() {
+	s.envelope = nil
 }
 
-func (session *session) welcome() {
-	if session.server.ConnectionChecker == nil {
-		session.reply(StatusServiceReady, session.server.WelcomeMessage)
+func (s *session) welcome() {
+	if s.server.ConnectionChecker == nil {
+		s.reply(StatusServiceReady, s.server.WelcomeMessage)
 		return
 	}
-	if err := session.server.ConnectionChecker(session.peer); err != nil {
-		session.reportError(err)
-		session.close()
+	if err := s.server.ConnectionChecker(s.peer); err != nil {
+		s.reportError(err)
+		s.close()
 	}
 }
 
-func (session *session) reply(code StatusCode, message string) {
-	fmt.Fprintf(session.writer, "%d %s\r\n", code, message)
-	session.flush()
+func (s *session) reply(code StatusCode, message string) {
+	fmt.Fprintf(s.writer, "%d %s\r\n", code, message)
+	s.flush()
 }
 
-func (session *session) flush() {
-	session.conn.SetWriteDeadline(
-		time.Now().Add(session.server.WriteTimeout))
-	session.writer.Flush()
-	session.conn.SetReadDeadline(
-		time.Now().Add(session.server.ReadTimeout))
+func (s *session) flush() {
+	s.conn.SetWriteDeadline(
+		time.Now().Add(s.server.WriteTimeout))
+	s.writer.Flush()
+	s.conn.SetReadDeadline(
+		time.Now().Add(s.server.ReadTimeout))
 }
 
-func (session *session) reportError(err error) {
+func (s *session) reportError(err error) {
 	if smtpdError, ok := err.(Error); ok {
-		session.reply(smtpdError.Code, smtpdError.Message)
+		s.reply(smtpdError.Code, smtpdError.Message)
 		return
 	}
-	session.reply(StatusLocalError, err.Error())
+	s.reply(StatusLocalError, err.Error())
 }
 
-func (session *session) extensions() []string {
+func (s *session) extensions() []string {
 	extensions := []string{
-		fmt.Sprintf("SIZE %d", session.server.MaxMessageSize),
+		fmt.Sprintf("SIZE %d", s.server.MaxMessageSize),
 		"8BITMIME",
 		"PIPELINING",
 	}
-	if session.server.EnableXCLIENT {
+	if s.server.EnableXCLIENT {
 		extensions = append(extensions, "XCLIENT")
 	}
-	if session.server.TLSConfig != nil && !session.tls {
+	if s.server.TLSConfig != nil && !s.tls {
 		extensions = append(extensions, "STARTTLS")
 	}
-	if session.server.Authenticator != nil && session.tls {
+	if s.server.Authenticator != nil && s.tls {
 		extensions = append(extensions, "AUTH PLAIN LOGIN")
 	}
 	return extensions
 }
 
-func (session *session) deliver() error {
-	if session.server.Handler != nil {
-		return session.server.Handler(session.peer, *session.envelope)
+func (s *session) deliver() error {
+	if s.server.Handler != nil {
+		return s.server.Handler(s.peer, *s.envelope)
 	}
 	return nil
 }
 
-func (session *session) close() {
-	defer session.conn.Close()
-	session.writer.Flush()
+func (s *session) close() {
+	defer s.conn.Close()
+	s.writer.Flush()
 	time.Sleep(200 * time.Millisecond)
 }
 
@@ -239,8 +239,7 @@ func (s *session) handleEHLO(cmd command) {
 }
 
 func (s *session) handleMAIL(cmd command) {
-	if s.peer.HeloName == "" {
-		s.reply(StatusBadSequence, "Please introduce yourself first.")
+	if !s.ensureHELO() {
 		return
 	}
 	if !s.tls && s.server.ForceTLS {
@@ -362,14 +361,12 @@ func (s *session) handleDATA(cmd command) {
 		s.reset()
 	}
 	if err != nil {
-		// Network error, ignore
-		return
+		return // Network error, ignore
 	}
 	// Discard the rest and report an error.
 	_, err = io.Copy(ioutil.Discard, reader)
 	if err != nil {
-		// Network error, ignore
-		return
+		return // Network error, ignore
 	}
 	s.reply(StatusExceededStorageAllocation, fmt.Sprintf(
 		"Message exceeded max message size of %d bytes",
@@ -393,8 +390,7 @@ func (s *session) handleAUTH(cmd command) {
 		s.reply(StatusCommandNotImplemented, "AUTH not supported.")
 		return
 	}
-	if s.peer.HeloName == "" {
-		s.reply(StatusBadSequence, "Please introduce yourself first.")
+	if !s.ensureHELO() {
 		return
 	}
 	if !s.tls {
@@ -563,4 +559,12 @@ func (s *session) errDecodingCommand() {
 
 func (s *session) errDecodingCredentials() {
 	s.reply(StatusSyntaxError, "Couldn't decode your credentials.")
+}
+
+func (s *session) ensureHELO() bool {
+	if s.peer.HeloName != "" {
+		return true
+	}
+	s.reply(StatusBadSequence, "Please introduce yourself first.")
+	return false
 }
