@@ -305,8 +305,8 @@ func (s *session) handleXCLIENT(cmd command) {
 		newHeloName = ""
 		newAddr     net.IP
 		newTCPPort  uint64
-		newUsername          = ""
-		newProto    Protocol = ""
+		newUsername = ""
+		newProto    Protocol
 	)
 	for _, item := range cmd.fields[1:] {
 		parts := strings.Split(item, "=")

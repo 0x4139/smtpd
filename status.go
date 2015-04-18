@@ -3,6 +3,7 @@ package smtpd
 // StatusCode represents SMTP status code
 type StatusCode int
 
+// SMTP Status codes
 const (
 	StatusSuccess              StatusCode = 200
 	StatusSystem               StatusCode = 211

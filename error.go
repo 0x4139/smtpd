@@ -10,6 +10,7 @@ type Error struct {
 	Message string     // The error message
 }
 
+// NewError provides a helper for creating new Error instances.
 func NewError(code StatusCode, message string) Error {
 	return Error{
 		Code:    code,
