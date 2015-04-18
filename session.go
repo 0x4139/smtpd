@@ -346,13 +346,20 @@ func (s *session) handleDATA(cmd command) {
 		"Go ahead. End your data with <CR><LF>.<CR><LF>",
 	)
 	s.conn.SetDeadline(time.Now().Add(s.server.DataTimeout))
-	data := &bytes.Buffer{}
+	discard := s.server.BlackHole == nil ||
+		!s.server.BlackHole(s.peer, *s.envelope)
+	var data io.Writer
+	if discard {
+		data = &bytes.Buffer{}
+	} else {
+		data = ioutil.Discard
+	}
 	reader := textproto.NewReader(s.reader).DotReader()
-	_, err := io.CopyN(data, reader, int64(s.server.MaxMessageSize))
+	_, err := io.CopyN(data, reader, s.server.MaxMessageSize)
 	if err == io.EOF {
 		// EOF was reached before MaxMessageSize
 		// Accept and deliver message
-		s.envelope.Data = data.Bytes()
+		s.envelope.Data = data.(*bytes.Buffer).Bytes()
 		if err := s.deliver(); err != nil {
 			s.reportError(err)
 		} else {
@@ -548,8 +555,7 @@ func (s *session) authenticate(user, pass string) {
 		s.reportError(err)
 		return
 	}
-	s.peer.Username = user
-	s.peer.Password = pass
+	s.peer.Username, s.peer.Password = user, pass
 	s.reply(StatusAuthenticated, "OK, you are now authenticated")
 }
 

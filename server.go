@@ -1,4 +1,6 @@
-// Package smtpd implements an SMTP server with support for STARTTLS, authentication (PLAIN/LOGIN), XCLIENT and optional restrictions on the different stages of the SMTP session.
+// Package smtpd implements an SMTP server with support for STARTTLS,
+// authentication (PLAIN/LOGIN), XCLIENT and optional restrictions on the
+// different stages of the SMTP session.
 package smtpd
 
 import (
@@ -11,16 +13,24 @@ import (
 
 // Server defines the parameters for running the SMTP server
 type Server struct {
-	Hostname       string // Server hostname. (default: "localhost.localdomain")
-	WelcomeMessage string // Initial server banner. (default: "<hostname> ESMTP ready.")
+	// Server hostname. (default: "localhost.localdomain")
+	Hostname string
+	// Initial server banner. (default: "<hostname> ESMTP ready.")
+	WelcomeMessage string
 
-	ReadTimeout  time.Duration // Socket timeout for read operations. (default: 60s)
-	WriteTimeout time.Duration // Socket timeout for write operations. (default: 60s)
-	DataTimeout  time.Duration // Socket timeout for DATA command (default: 5m)
+	// Socket timeout for read operations. (default: 60s)
+	ReadTimeout time.Duration
+	// Socket timeout for write operations. (default: 60s)
+	WriteTimeout time.Duration
+	// Socket timeout for DATA command (default: 5m)
+	DataTimeout time.Duration
 
-	MaxConnections int // Max concurrent connections, use -1 to disable. (default: 100)
-	MaxMessageSize int // Max message size in bytes. (default: 10240000)
-	MaxRecipients  int // Max RCPT TO calls for each envelope. (default: 100)
+	// Max concurrent connections, use -1 to disable. (default: 100)
+	MaxConnections int
+	// Max message size in bytes. (default: 10240000)
+	MaxMessageSize int64
+	// Max RCPT TO calls for each envelope. (default: 100)
+	MaxRecipients int
 
 	// New e-mails are handed off to this function.
 	// Can be left empty for a NOOP server.
@@ -40,6 +50,14 @@ type Server struct {
 	// Can be left empty for no authentication support.
 	Authenticator func(peer Peer, username, password string) error
 
+	// BlackHole is an optimization that allows quietly sending all the
+	// incoming message to the big /dev/null in the sky while still
+	// maintaining a polite conversation with the client. This behaviour is
+	// triggered when the function is set and returns true. In that case the
+	// Handler function is not invoked at all. Please note that the
+	// Envelope at this stage has its Data field empty.
+	BlackHole func(peer Peer, env Envelope) bool
+
 	EnableXCLIENT bool // Enable XCLIENT support (default: false)
 
 	TLSConfig *tls.Config // Enable STARTTLS support.
@@ -58,13 +76,20 @@ const (
 
 // Peer represents the client connecting to the server
 type Peer struct {
-	HeloName   string               // Server name used in HELO/EHLO command
-	Username   string               // Username from authentication, if authenticated
-	Password   string               // Password from authentication, if authenticated
-	Protocol   Protocol             // Protocol used, SMTP or ESMTP
-	ServerName string               // A copy of Server.Hostname
-	Addr       net.Addr             // Network address
-	TLS        *tls.ConnectionState // TLS Connection details, if on TLS
+	// Server name used in HELO/EHLO command
+	HeloName string
+	// Username from authentication, if authenticated
+	Username string
+	// Password from authentication, if authenticated
+	Password string
+	// Protocol used, SMTP or ESMTP
+	Protocol Protocol
+	// A copy of Server.Hostname
+	ServerName string
+	// Network address
+	Addr net.Addr
+	// TLS Connection details, if on TLS
+	TLS *tls.ConnectionState
 }
 
 // ListenAndServe starts the SMTP server and listens on the address provided
@@ -96,9 +121,7 @@ func (srv *Server) Serve(l net.Listener) error {
 			}
 			return e
 		}
-
 		session := srv.newSession(conn)
-
 		if limiter != nil {
 			go func() {
 				select {
