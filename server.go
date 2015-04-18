@@ -2,7 +2,6 @@
 package smtpd
 
 import (
-	"bufio"
 	"crypto/tls"
 	"fmt"
 	"log"
@@ -66,37 +65,6 @@ type Peer struct {
 	ServerName string               // A copy of Server.Hostname
 	Addr       net.Addr             // Network address
 	TLS        *tls.ConnectionState // TLS Connection details, if on TLS
-}
-
-type session struct {
-	server *Server
-
-	peer     Peer
-	envelope *Envelope
-
-	conn net.Conn
-
-	reader  *bufio.Reader
-	writer  *bufio.Writer
-	scanner *bufio.Scanner
-
-	tls bool
-}
-
-func (srv *Server) newSession(c net.Conn) (s *session) {
-	s = &session{
-		server: srv,
-		conn:   c,
-		reader: bufio.NewReader(c),
-		writer: bufio.NewWriter(c),
-		peer: Peer{
-			Addr:       c.RemoteAddr(),
-			ServerName: srv.Hostname,
-		},
-	}
-
-	s.scanner = bufio.NewScanner(s.reader)
-	return
 }
 
 // ListenAndServe starts the SMTP server and listens on the address provided
@@ -178,97 +146,4 @@ func (srv *Server) configureDefaults() {
 			srv.Hostname,
 		)
 	}
-}
-
-func (session *session) serve() {
-	defer session.close()
-	session.welcome()
-	for {
-		for session.scanner.Scan() {
-			session.handle(session.scanner.Text())
-		}
-		err := session.scanner.Err()
-		if err == bufio.ErrTooLong {
-			session.reply(StatusSyntaxError, "Line too long")
-			// Advance reader to the next newline
-			session.reader.ReadString('\n')
-			session.scanner = bufio.NewScanner(session.reader)
-			// Reset and have the client start over.
-			session.reset()
-			continue
-		}
-		break
-	}
-}
-
-func (session *session) reject() {
-	session.reply(StatusServiceNotAvailable, "Too busy. Try again later.")
-	session.close()
-}
-
-func (session *session) reset() {
-	session.envelope = nil
-}
-
-func (session *session) welcome() {
-	if session.server.ConnectionChecker == nil {
-		session.reply(StatusServiceReady, session.server.WelcomeMessage)
-		return
-	}
-	if err := session.server.ConnectionChecker(session.peer); err != nil {
-		session.error(err)
-		session.close()
-	}
-}
-
-func (session *session) reply(code StatusCode, message string) {
-	fmt.Fprintf(session.writer, "%d %s\r\n", code, message)
-	session.flush()
-}
-
-func (session *session) flush() {
-	session.conn.SetWriteDeadline(
-		time.Now().Add(session.server.WriteTimeout))
-	session.writer.Flush()
-	session.conn.SetReadDeadline(
-		time.Now().Add(session.server.ReadTimeout))
-}
-
-func (session *session) error(err error) {
-	if smtpdError, ok := err.(Error); ok {
-		session.reply(smtpdError.Code, smtpdError.Message)
-		return
-	}
-	session.reply(StatusLocalError, err.Error())
-}
-
-func (session *session) extensions() []string {
-	extensions := []string{
-		fmt.Sprintf("SIZE %d", session.server.MaxMessageSize),
-		"8BITMIME",
-		"PIPELINING",
-	}
-	if session.server.EnableXCLIENT {
-		extensions = append(extensions, "XCLIENT")
-	}
-	if session.server.TLSConfig != nil && !session.tls {
-		extensions = append(extensions, "STARTTLS")
-	}
-	if session.server.Authenticator != nil && session.tls {
-		extensions = append(extensions, "AUTH PLAIN LOGIN")
-	}
-	return extensions
-}
-
-func (session *session) deliver() error {
-	if session.server.Handler != nil {
-		return session.server.Handler(session.peer, *session.envelope)
-	}
-	return nil
-}
-
-func (session *session) close() {
-	defer session.conn.Close()
-	session.writer.Flush()
-	time.Sleep(200 * time.Millisecond)
 }

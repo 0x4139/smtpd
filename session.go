@@ -57,6 +57,129 @@ func parseLine(line string) (cmd command) {
 	return
 }
 
+type session struct {
+	server *Server
+
+	peer     Peer
+	envelope *Envelope
+
+	conn net.Conn
+
+	reader  *bufio.Reader
+	writer  *bufio.Writer
+	scanner *bufio.Scanner
+
+	tls bool
+}
+
+func (srv *Server) newSession(c net.Conn) (s *session) {
+	s = &session{
+		server: srv,
+		conn:   c,
+		reader: bufio.NewReader(c),
+		writer: bufio.NewWriter(c),
+		peer: Peer{
+			Addr:       c.RemoteAddr(),
+			ServerName: srv.Hostname,
+		},
+	}
+	s.scanner = bufio.NewScanner(s.reader)
+	return
+}
+
+func (session *session) serve() {
+	defer session.close()
+	session.welcome()
+	for {
+		for session.scanner.Scan() {
+			session.handle(session.scanner.Text())
+		}
+		err := session.scanner.Err()
+		if err == bufio.ErrTooLong {
+			session.reply(StatusSyntaxError, "Line too long")
+			// Advance reader to the next newline
+			session.reader.ReadString('\n')
+			session.scanner = bufio.NewScanner(session.reader)
+			// Reset and have the client start over.
+			session.reset()
+			continue
+		}
+		break
+	}
+}
+
+func (session *session) reject() {
+	session.reply(StatusServiceNotAvailable, "Too busy. Try again later.")
+	session.close()
+}
+
+func (session *session) reset() {
+	session.envelope = nil
+}
+
+func (session *session) welcome() {
+	if session.server.ConnectionChecker == nil {
+		session.reply(StatusServiceReady, session.server.WelcomeMessage)
+		return
+	}
+	if err := session.server.ConnectionChecker(session.peer); err != nil {
+		session.reportError(err)
+		session.close()
+	}
+}
+
+func (session *session) reply(code StatusCode, message string) {
+	fmt.Fprintf(session.writer, "%d %s\r\n", code, message)
+	session.flush()
+}
+
+func (session *session) flush() {
+	session.conn.SetWriteDeadline(
+		time.Now().Add(session.server.WriteTimeout))
+	session.writer.Flush()
+	session.conn.SetReadDeadline(
+		time.Now().Add(session.server.ReadTimeout))
+}
+
+func (session *session) reportError(err error) {
+	if smtpdError, ok := err.(Error); ok {
+		session.reply(smtpdError.Code, smtpdError.Message)
+		return
+	}
+	session.reply(StatusLocalError, err.Error())
+}
+
+func (session *session) extensions() []string {
+	extensions := []string{
+		fmt.Sprintf("SIZE %d", session.server.MaxMessageSize),
+		"8BITMIME",
+		"PIPELINING",
+	}
+	if session.server.EnableXCLIENT {
+		extensions = append(extensions, "XCLIENT")
+	}
+	if session.server.TLSConfig != nil && !session.tls {
+		extensions = append(extensions, "STARTTLS")
+	}
+	if session.server.Authenticator != nil && session.tls {
+		extensions = append(extensions, "AUTH PLAIN LOGIN")
+	}
+	return extensions
+}
+
+func (session *session) deliver() error {
+	if session.server.Handler != nil {
+		return session.server.Handler(session.peer, *session.envelope)
+	}
+	return nil
+}
+
+func (session *session) close() {
+	defer session.conn.Close()
+	session.writer.Flush()
+	time.Sleep(200 * time.Millisecond)
+}
+
 func (s *session) handle(line string) {
 	cmd := parseLine(line)
 	action, exists := cmdMap[cmd.action]
@@ -78,7 +201,7 @@ func (s *session) handleHELO(cmd command) {
 	if s.server.HeloChecker != nil {
 		err := s.server.HeloChecker(s.peer, cmd.fields[1])
 		if err != nil {
-			s.error(err)
+			s.reportError(err)
 			return
 		}
 	}
@@ -99,7 +222,7 @@ func (s *session) handleEHLO(cmd command) {
 	if s.server.HeloChecker != nil {
 		err := s.server.HeloChecker(s.peer, cmd.fields[1])
 		if err != nil {
-			s.error(err)
+			s.reportError(err)
 			return
 		}
 	}
@@ -142,7 +265,7 @@ func (s *session) handleMAIL(cmd command) {
 	if s.server.SenderChecker != nil {
 		err = s.server.SenderChecker(s.peer, addr)
 		if err != nil {
-			s.error(err)
+			s.reportError(err)
 			return
 		}
 	}
@@ -167,7 +290,7 @@ func (s *session) handleRCPT(cmd command) {
 	if s.server.RecipientChecker != nil {
 		err = s.server.RecipientChecker(s.peer, addr)
 		if err != nil {
-			s.error(err)
+			s.reportError(err)
 			return
 		}
 	}
@@ -232,7 +355,7 @@ func (s *session) handleDATA(cmd command) {
 		// Accept and deliver message
 		s.envelope.Data = data.Bytes()
 		if err := s.deliver(); err != nil {
-			s.error(err)
+			s.reportError(err)
 		} else {
 			s.reply(StatusOK, "Thank you.")
 		}
@@ -426,7 +549,7 @@ func (s *session) goAhead(cmd command) {
 
 func (s *session) authenticate(user, pass string) {
 	if err := s.server.Authenticator(s.peer, user, pass); err != nil {
-		s.error(err)
+		s.reportError(err)
 		return
 	}
 	s.peer.Username = user
