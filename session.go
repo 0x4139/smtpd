@@ -388,6 +388,7 @@ func (s *session) handleRSET(cmd command) {
 }
 
 func (s *session) handleQUIT(cmd command) {
+	fmt.Println("Handling QUIT")
 	s.reply(StatusServiceClosing, "OK, bye")
 	s.close()
 }
