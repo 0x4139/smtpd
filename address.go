@@ -6,8 +6,10 @@ import (
 )
 
 func parseAddress(src string) (string, error) {
-
-	if src[0] != '<' || src[len(src)-1] != '>' {
+	if len(src) <2{
+		return "", fmt.Errorf("ill-formatted e-mail address: %s", src)
+	}
+	if src[0] != '<' || src[len(src) - 1] != '>' {
 		return "", fmt.Errorf("ill-formatted e-mail address: %s", src)
 	}
 
@@ -15,5 +17,5 @@ func parseAddress(src string) (string, error) {
 		return "", fmt.Errorf("ill-formatted e-mail address: %s", src)
 	}
 
-	return src[1 : len(src)-1], nil
+	return src[1 : len(src) - 1], nil
 }
